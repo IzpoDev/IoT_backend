@@ -5,12 +5,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-@Getter
 @Setter
+@Getter
 @AllArgsConstructor
 @NoArgsConstructor
-public class LoginResponse {
-    private String token;
-    private String message;
-    private UserResponseDto user;
+public class RoleResponseDto {
+    private Long id;
+    private String name;
+    private String description;
 }
