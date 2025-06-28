@@ -1,18 +1,29 @@
 server:
-  port: 8080 # Puerto donde se ejecutará tu aplicación Spring Boot
+  port: 8080
 
 spring:
   application:
     name: iot-lights-system
   data:
     mongodb:
-      host: localhost # Dirección de tu servidor MongoDB
-      port: 27017 # Puerto de tu servidor MongoDB
-      database: iot_lights_db # Nombre de la base de datos a usar
+      host: ${DB_HOST}
+      port: ${DB_PORT}
+      database: ${DB_NAME}
+  datasource:
+    url: ${DB_SQL_URL}
+    username: ${DB_SQL_USER}
+    password: ${DB_SQL_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
 
-# Configuración de loggin (opcional, para ver más detalles en consola)
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: ${JWT_EXPIRATION}
+
 logging:
   level:
     root: INFO
-    org.springframework.data.mongodb.core.MongoTemplate: DEBUG # Para ver queries de MongoDB
-    com.example.iotlights: DEBUG # Para ver logs de tu aplicación
+    org.springframework.data.mongodb.core.MongoTemplate: DEBUG
+    com.example.iotlights: DEBUG # Para ver logs de tu aplicaciï¿½n
