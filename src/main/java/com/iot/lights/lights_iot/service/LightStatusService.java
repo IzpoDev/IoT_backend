@@ -8,8 +8,12 @@ import com.iot.lights.lights_iot.model.event.InitialLightStatusEvent; // Nueva i
 import com.iot.lights.lights_iot.model.event.LightStatusUpdateEvent;   // Nueva importación
 import com.iot.lights.lights_iot.repository.LightStatusRepository;
 import com.iot.lights.lights_iot.utils.LightStatusConverter;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher; // Nueva importación
 // REMOVER: import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -17,9 +21,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
+@Slf4j
 public class LightStatusService {
 
     // REMOVER: private final LightStatusWebSocketHandler webSocketHandler;
@@ -27,26 +33,53 @@ public class LightStatusService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, LightStatusDTO> currentLightStates = new ConcurrentHashMap<>();
     private final ApplicationEventPublisher eventPublisher; // ¡Nueva inyección!
+    private final EmailService emailService; // Nueva inyección para EmailService
 
     // El constructor ahora NO necesita LightStatusWebSocketHandler
     public LightStatusService(LightStatusRepository lightStatusRepository,
-                              ApplicationEventPublisher eventPublisher) { // Inyecta ApplicationEventPublisher
+                              ApplicationEventPublisher eventPublisher, EmailService emailService) { // Inyecta ApplicationEventPublisher
         this.lightStatusRepository = lightStatusRepository;
         this.eventPublisher = eventPublisher;
         initializeCurrentLightStates();
+        this.emailService = emailService; // Inicializa EmailService
     }
 
+    @PostConstruct
     private void initializeCurrentLightStates() {
         String[] cuadras = {"Cuadra 1", "Cuadra 2", "Cuadra 3", "Cuadra 4", "Cuadra 5", "Cuadra 6"};
+
         for (String cuadra : cuadras) {
-            LightStatusDocument lastRecord = lightStatusRepository.findFirstByCuadraOrderByTimestampDesc(cuadra);
-            if (lastRecord != null) {
-                currentLightStates.put(cuadra, LightStatusConverter.toDto(lastRecord));
-            } else {
-                currentLightStates.put(cuadra, new LightStatusDTO("UPDATE", cuadra, "ENCENDIDA", LocalDateTime.now()));
+            try {
+                // Opción 1: Usar Optional para manejar caso cuando no existe
+                Optional<LightStatusDocument> latest = lightStatusRepository.findTop1ByCuadraOrderByTimestampDesc(cuadra);
+
+                LightStatusDTO defaultStatus;
+                if (latest.isPresent()) {
+                    defaultStatus = LightStatusConverter.fromDocument(latest.get());
+                } else {
+                    // Estado por defecto si no existe historial
+                    defaultStatus = LightStatusDTO.builder()
+                            .cuadra(cuadra)
+                            .estado("ENCENDIDA")
+                            .timestamp(LocalDateTime.now())
+                            .build();
+                }
+
+                currentLightStates.put(cuadra, defaultStatus);
+
+            } catch (Exception e) {
+                log.error("Error inicializando estado para {}: {}", cuadra, e.getMessage());
+
+                // Estado por defecto en caso de error
+                LightStatusDTO defaultStatus = LightStatusDTO.builder()
+                        .cuadra(cuadra)
+                        .estado("ENCENDIDA")
+                        .timestamp(LocalDateTime.now())
+                        .build();
+
+                currentLightStates.put(cuadra, defaultStatus);
             }
         }
-        System.out.println("Estado inicial de luces en servicio cargado/asumido: " + currentLightStates);
     }
 
     // Método para procesar los mensajes JSON que llegan del ESP32 a través del WebSocketHandler
@@ -130,5 +163,26 @@ public class LightStatusService {
 
     public LightStatusDTO getCurrentLightStateByCuadra(String cuadra) {
         return currentLightStates.get(cuadra);
+    }
+
+    @EventListener
+    public void detectOutage(LightStatusDTO status) {
+        if ("APAGADA".equals(status.getEstado())) {
+            // Usar el método correcto con Optional
+            Optional<LightStatusDocument> lastStatusOpt = lightStatusRepository.findTop1ByCuadraOrderByTimestampDesc(status.getCuadra());
+
+            if (lastStatusOpt.isPresent() && "ENCENDIDA".equals(lastStatusOpt.get().getEstado())) {
+                // ¡Apagón detectado!
+                sendOutageAlert(status.getCuadra());
+            }
+        }
+    }
+
+    private void sendOutageAlert(String cuadra) {
+        // Envío dual: WebSocket + Email
+        eventPublisher.publishEvent(
+                new LightStatusUpdateEvent(this, "ALARM" + cuadra +  "APAGADA" + LocalDateTime.now())
+        );
+        emailService.sendLightOutageAlert(cuadra, LocalDateTime.now());
     }
 }
