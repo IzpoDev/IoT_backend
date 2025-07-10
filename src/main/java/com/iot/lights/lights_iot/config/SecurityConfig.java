@@ -24,34 +24,50 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http.csrf(AbstractHttpConfigurer::disable);
-        http
-                .authorizeHttpRequests(requests ->
-                        requests.requestMatchers( "/swagger-ui/**").permitAll()
-                                .requestMatchers( "/v3/api-docs*/**").permitAll()
+        // 1. Deshabilitar CSRF y añadir nuestro filtro JWT al principio de la cadena.
+        http.csrf(AbstractHttpConfigurer::disable)
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
-                                .requestMatchers( HttpMethod.POST,"/user/create").permitAll()
-                                .requestMatchers( HttpMethod.GET,"/user/auth").permitAll()
-                                .requestMatchers( "/user/**").authenticated()
+        // 2. Configurar las reglas de autorización de las peticiones HTTP.
+        http.authorizeHttpRequests(requests -> requests
+                // --- A. ENDPOINTS PÚBLICOS (No requieren autenticación) ---
+                .requestMatchers(
+                        "/swagger-ui/**",
+                        "/v3/api-docs*/**",
+                        "/ws/lights" // El WebSocket es público
+                ).permitAll()
+                .requestMatchers(HttpMethod.POST,
+                        "/user/create", // Permitir que cualquiera cree una cuenta de usuario.
+                        "/user/auth"    // Permitir que cualquiera intente autenticarse.
+                ).permitAll()
 
-                                .requestMatchers(HttpMethod.POST, "/admin/**").hasRole("admin")
+                // --- B. ENDPOINTS DE ADMINISTRADOR (Requieren rol 'ADMIN') ---
+                // CORRECCIÓN: Se protegen todos los endpoints de roles y de admin.
+                .requestMatchers(// Toda la gestión de roles es solo para administradores.
+                        "/admin/**",
+                        "/role/**"
+                ).hasRole("ADMIN") // MEJORA: Usar mayúsculas es la convención.
 
-                                .anyRequest().authenticated()
-                );
+                // --- C. CUALQUIER OTRA PETICIÓN (Requiere autenticación) ---
+                // Si la petición no coincide con ninguna regla anterior, debe estar autenticada.
+                .anyRequest().authenticated()
+        );
+
+        // 3. Deshabilitar el formulario de login por defecto de Spring.
         http.formLogin(AbstractHttpConfigurer::disable);
+
+        // 4. Configurar manejadores de errores de autenticación y autorización personalizados.
         http.httpBasic(hbc -> hbc.authenticationEntryPoint(new CustomBasicAuthenticationEntryPoint()));
         http.exceptionHandling(e -> e.accessDeniedHandler(new CustomAccessDeniedHandler()));
 
-
-        http.addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
-
     }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
-
         return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }
+
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration authenticationConfiguration) throws Exception {
         return authenticationConfiguration.getAuthenticationManager();

@@ -24,7 +24,7 @@ public class UserController {
         UserResponseDto userDto = userService.createUser(user);
         return new ResponseEntity<>(userDto, HttpStatus.CREATED);
     }
-    @GetMapping("/auth")
+    @PostMapping("/auth")
     public ResponseEntity<LoginResponse> authenticate(@RequestBody @Valid LoginRequest loginRequest) {
         LoginResponse loginResponse = userService.authenticate(loginRequest);
         return new ResponseEntity<>(loginResponse, HttpStatus.ACCEPTED);

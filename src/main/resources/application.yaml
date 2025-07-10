@@ -1,5 +1,12 @@
 server:
   port: 8080
+iot:
+  lights:
+    cuadras:
+      - "Cuadra 1"
+      - "Cuadra 2"
+      - "Cuadra 3"
+      - "Cuadra 4"
 
 spring:
   application:
@@ -38,6 +45,7 @@ app:
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION}
+
 
 logging:
   level:

@@ -9,6 +9,7 @@ import java.util.List;
 
 @Component
 public class RoleMapper {
+
     public static RoleEntity toEntity(RoleRequestDto roleRequestDto) {
         RoleEntity roleEntity = new RoleEntity();
         roleEntity.setName(roleRequestDto.getName());

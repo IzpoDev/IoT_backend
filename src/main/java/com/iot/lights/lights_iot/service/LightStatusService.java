@@ -1,19 +1,22 @@
 package com.iot.lights.lights_iot.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.iot.lights.lights_iot.model.document.LightStatusActualDocument;
 import com.iot.lights.lights_iot.model.document.LightStatusDocument;
 import com.iot.lights.lights_iot.model.dto.InitialStatusDTO;
 import com.iot.lights.lights_iot.model.dto.LightStatusDTO;
-import com.iot.lights.lights_iot.model.event.InitialLightStatusEvent; // Nueva importación
-import com.iot.lights.lights_iot.model.event.LightStatusUpdateEvent;   // Nueva importación
+import com.iot.lights.lights_iot.model.event.InitialLightStatusEvent;
+import com.iot.lights.lights_iot.model.event.LightStatusUpdateEvent;
+import com.iot.lights.lights_iot.repository.LightStatusActualRepository;
 import com.iot.lights.lights_iot.repository.LightStatusRepository;
 import com.iot.lights.lights_iot.utils.LightStatusConverter;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher; // Nueva importación
-// REMOVER: import org.springframework.context.annotation.Lazy;
-import org.springframework.context.event.EventListener;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -26,128 +29,166 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor // <-- MEJORA: Lombok genera el constructor, más limpio.
 public class LightStatusService {
 
-    // REMOVER: private final LightStatusWebSocketHandler webSocketHandler;
+    // Inyecciones finales, gestionadas por @RequiredArgsConstructor
     private final LightStatusRepository lightStatusRepository;
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    private final Map<String, LightStatusDTO> currentLightStates = new ConcurrentHashMap<>();
-    private final ApplicationEventPublisher eventPublisher; // ¡Nueva inyección!
-    private final EmailService emailService; // Nueva inyección para EmailService
+    private final LightStatusActualRepository lightStatusActualRepository;
+    private final ApplicationEventPublisher eventPublisher;
+    private final EmailService emailService;
+    private final ObjectMapper objectMapper; // Spring Boot ya provee este Bean
 
-    // El constructor ahora NO necesita LightStatusWebSocketHandler
-    public LightStatusService(LightStatusRepository lightStatusRepository,
-                              ApplicationEventPublisher eventPublisher, EmailService emailService) { // Inyecta ApplicationEventPublisher
-        this.lightStatusRepository = lightStatusRepository;
-        this.eventPublisher = eventPublisher;
-        initializeCurrentLightStates();
-        this.emailService = emailService; // Inicializa EmailService
-    }
+    // MEJORA: Externalizar la configuración de las cuadras.
+    @Value("${iot.lights.cuadras:Cuadra 1, Cuadra 2, Cuadra 3, Cuadra 4}")
+    private List<String> cuadras;
+
+    private final Map<String, LightStatusDTO> currentLightStates = new ConcurrentHashMap<>();
 
     @PostConstruct
     private void initializeCurrentLightStates() {
-        String[] cuadras = {"Cuadra 1", "Cuadra 2", "Cuadra 3", "Cuadra 4", "Cuadra 5", "Cuadra 6"};
-
+        log.info("Inicializando estado de luces para las cuadras: {}", cuadras);
         for (String cuadra : cuadras) {
-            try {
-                // Opción 1: Usar Optional para manejar caso cuando no existe
-                Optional<LightStatusDocument> latest = lightStatusRepository.findTop1ByCuadraOrderByTimestampDesc(cuadra);
+            // La lógica de buscar el último estado es correcta.
+            Optional<LightStatusDocument> latest = lightStatusRepository.findTop1ByCuadraOrderByTimestampDesc(cuadra);
 
-                LightStatusDTO defaultStatus;
-                if (latest.isPresent()) {
-                    defaultStatus = LightStatusConverter.fromDocument(latest.get());
-                } else {
-                    // Estado por defecto si no existe historial
-                    defaultStatus = LightStatusDTO.builder()
+            LightStatusDTO status = latest.map(LightStatusConverter::fromDocument)
+                    .orElseGet(() -> LightStatusDTO.builder() // Estado por defecto si no hay historial
                             .cuadra(cuadra)
-                            .estado("ENCENDIDA")
+                            .estado("ENCENDIDA") // O "DESCONOCIDO"
                             .timestamp(LocalDateTime.now())
-                            .build();
-                }
+                            .build());
 
-                currentLightStates.put(cuadra, defaultStatus);
-
-            } catch (Exception e) {
-                log.error("Error inicializando estado para {}: {}", cuadra, e.getMessage());
-
-                // Estado por defecto en caso de error
-                LightStatusDTO defaultStatus = LightStatusDTO.builder()
-                        .cuadra(cuadra)
-                        .estado("ENCENDIDA")
-                        .timestamp(LocalDateTime.now())
-                        .build();
-
-                currentLightStates.put(cuadra, defaultStatus);
-            }
+            currentLightStates.put(cuadra, status);
         }
+        log.info("Estado inicial en memoria cargado para {} cuadras.", currentLightStates.size());
     }
 
-    // Método para procesar los mensajes JSON que llegan del ESP32 a través del WebSocketHandler
+    /**
+     * REFACTORIZADO: Punto de entrada único y simplificado para procesar mensajes del ESP32.
+     */
     public void processIncomingWebSocketMessage(String messageJson) {
+        // Primero, retransmitimos el mensaje a todos los clientes UI para una respuesta en tiempo real.
+        eventPublisher.publishEvent(new LightStatusUpdateEvent(this, messageJson));
+        log.debug("Evento de actualización publicado para retransmisión: {}", messageJson);
+
         try {
-            // Publica un evento para que el handler lo retransmita
-            eventPublisher.publishEvent(new LightStatusUpdateEvent(this, messageJson));
-            System.out.println("Mensaje recibido y evento publicado para retransmision: " + messageJson);
+            // MEJORA: Parseamos a un JsonNode genérico para leer el campo "type" sin errores.
+            JsonNode rootNode = objectMapper.readTree(messageJson);
+            JsonNode typeNode = rootNode.get("type");
 
-            LightStatusDTO receivedAlarmDto = null;
-            try {
-                receivedAlarmDto = objectMapper.readValue(messageJson, LightStatusDTO.class);
-            } catch (Exception e) {
-                System.out.println("No es un DTO de alarma directo, intentando como estado inicial o ignorando.");
+            if (typeNode == null) {
+                log.warn("Mensaje recibido sin campo 'type', se ignora: {}", messageJson);
+                return;
             }
 
-            if (receivedAlarmDto != null && "ALARM".equals(receivedAlarmDto.getType())) {
-                receivedAlarmDto.setTimestamp(LocalDateTime.now());
-                currentLightStates.put(receivedAlarmDto.getCuadra(), receivedAlarmDto);
+            String messageType = typeNode.asText();
 
-                LightStatusDocument recordToSave = LightStatusConverter.toDocument(receivedAlarmDto);
-                lightStatusRepository.save(recordToSave);
-                System.out.println("Registro de estado de luz guardado en DB: " + recordToSave);
+            // MEJORA: Lógica de enrutamiento clara basada en el tipo.
+            switch (messageType) {
+                case "INITIAL_STATUS":
+                    log.info("Procesando mensaje de estado inicial (INITIAL_STATUS).");
+                    InitialStatusDTO initialStatus = objectMapper.treeToValue(rootNode, InitialStatusDTO.class);
+                    // CORRECCIÓN: Iteramos y guardamos cada estado en la BD.
+                    initialStatus.getLuces().forEach(this::processAndPersistState);
+                    log.info("Estado inicial del ESP32 procesado y guardado en la base de datos.");
+                    break;
 
-            } else {
-                InitialStatusDTO initialStatusDto = null;
-                try {
-                    initialStatusDto = objectMapper.readValue(messageJson, InitialStatusDTO.class);
-                } catch (Exception e) {
-                    System.out.println("Mensaje no reconocido como ALARM o INITIAL_STATUS: " + messageJson);
-                    return;
-                }
+                case "ALARM":
+                    log.info("Procesando mensaje de alarma (ALARM).");
+                    LightStatusDTO alarmStatus = objectMapper.treeToValue(rootNode, LightStatusDTO.class);
+                    processAndPersistState(alarmStatus);
+                    break;
 
-                if (initialStatusDto != null && "INITIAL_STATUS".equals(initialStatusDto.getType())) {
-                    System.out.println("Estado inicial recibido del ESP32. Sincronizando estado en memoria.");
-                    if (initialStatusDto.getLuces() != null) {
-                        initialStatusDto.getLuces().forEach(lightDto -> {
-                            lightDto.setType("UPDATE");
-                            lightDto.setTimestamp(LocalDateTime.now());
-                            currentLightStates.put(lightDto.getCuadra(), lightDto);
-                        });
-                        System.out.println("Estado en memoria sincronizado con INITIAL_STATUS del ESP32.");
-                    }
-                }
+                default:
+                    log.warn("Tipo de mensaje no reconocido: '{}'. Mensaje: {}", messageType, messageJson);
             }
-        } catch (Exception e) {
-            System.err.println("Error al procesar mensaje WebSocket entrante: " + e.getMessage());
-            e.printStackTrace();
+
+        } catch (JsonProcessingException e) {
+            log.error("Error fatal al parsear JSON del WebSocket: {}", messageJson, e);
         }
     }
+
+    /**
+     * NUEVO MÉTODO CENTRALIZADO: Procesa, persiste y actualiza el estado de una luz.
+     * Es llamado tanto para estados iniciales como para alarmas.
+     */
+    private void processAndPersistState(LightStatusDTO newStatus) {
+        newStatus.setTimestamp(LocalDateTime.now()); // Aseguramos timestamp del servidor
+
+        // 1. Detectar si es un apagón ANTES de actualizar el estado en memoria
+        detectOutage(newStatus);
+
+        // 2. Actualizar el estado en el caché de memoria
+        currentLightStates.put(newStatus.getCuadra(), newStatus);
+
+        // 3. Guardar en ambas colecciones de MongoDB usando tu método existente. ¡Esto es clave!
+        saveOrUpdateCurrentAndHistory(newStatus);
+
+        log.info("Estado para la cuadra '{}' actualizado a '{}' y persistido.", newStatus.getCuadra(), newStatus.getEstado());
+    }
+
+    /**
+     * MEJORA: Este método ahora es el único punto de verdad para la persistencia.
+     */
+    public void saveOrUpdateCurrentAndHistory(LightStatusDTO dto) {
+        // Guardar en light_status_actual (estado actual)
+        LightStatusActualDocument actual = new LightStatusActualDocument(dto.getCuadra(), dto.getEstado(), dto.getTimestamp());
+        lightStatusActualRepository.save(actual);
+
+        // Guardar en light_status_history (historial)
+        LightStatusDocument history = LightStatusConverter.toDocument(dto);
+        lightStatusRepository.save(history);
+    }
+
+    /**
+     * MEJORA: Lógica de detección de apagón.
+     * Compara el estado entrante con el que todavía está en memoria (el estado anterior).
+     */
+    private void detectOutage(LightStatusDTO incomingStatus) {
+        if ("APAGADA".equals(incomingStatus.getEstado())) {
+            LightStatusDTO previousStatus = currentLightStates.get(incomingStatus.getCuadra());
+            // Si existía un estado previo y era "ENCENDIDA", es un apagón.
+            if (previousStatus != null && "ENCENDIDA".equals(previousStatus.getEstado())) {
+                log.warn("¡APAGÓN DETECTADO! Cuadra: {}", incomingStatus.getCuadra());
+                sendOutageAlert(incomingStatus.getCuadra());
+            }
+        }
+    }
+
+    private void sendOutageAlert(String cuadra) {
+        // MEJORA: Construir un DTO para la alerta y serializarlo a JSON. Más robusto que concatenar strings.
+        LightStatusDTO alertDto = LightStatusDTO.builder()
+                .type("OUTAGE_ALERT") // Un tipo específico para la UI
+                .cuadra(cuadra)
+                .estado("APAGADA")
+                .timestamp(LocalDateTime.now())
+                .build();
+        try {
+            String alertJson = objectMapper.writeValueAsString(alertDto);
+            eventPublisher.publishEvent(new LightStatusUpdateEvent(this, alertJson));
+        } catch (JsonProcessingException e) {
+            log.error("Error al serializar la alerta de apagón para la cuadra {}", cuadra, e);
+        }
+
+        // El envío de email está bien.
+        emailService.sendLightOutageAlert(cuadra, LocalDateTime.now());
+    }
+
+    // --- El resto de tus métodos públicos (para el Controller y el Handler) están bien y no necesitan cambios ---
 
     public List<LightStatusDTO> getCurrentLightStates() {
         return new ArrayList<>(currentLightStates.values());
     }
 
-    // Método para enviar el estado actual a un cliente específico cuando se conecta
-    // Ahora publica un evento para que el Handler lo gestione
     public void sendCurrentLightStatesToClient(WebSocketSession session) {
         try {
-            List<LightStatusDTO> currentStatesList = getCurrentLightStates();
-            InitialStatusDTO initialStatus = new InitialStatusDTO(currentStatesList);
+            InitialStatusDTO initialStatus = new InitialStatusDTO(getCurrentLightStates());
             String initialStatusJson = objectMapper.writeValueAsString(initialStatus);
-            // Publica un evento de estado inicial, pasando la sesión objetivo
             eventPublisher.publishEvent(new InitialLightStatusEvent(this, initialStatusJson, session));
-            System.out.println("Evento de estado inicial publicado para nueva sesion " + session.getId());
+            log.info("Evento de estado inicial publicado para la nueva sesión {}", session.getId());
         } catch (Exception e) {
-            System.err.println("Error al publicar evento de estado inicial para nueva sesion: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error al publicar evento de estado inicial para la sesión {}: {}", session.getId(), e.getMessage(), e);
         }
     }
 
@@ -159,30 +200,5 @@ public class LightStatusService {
     public List<LightStatusDTO> getLightHistoryByCuadra(String cuadra) {
         List<LightStatusDocument> records = lightStatusRepository.findByCuadraOrderByTimestampDesc(cuadra);
         return LightStatusConverter.toDtoList(records);
-    }
-
-    public LightStatusDTO getCurrentLightStateByCuadra(String cuadra) {
-        return currentLightStates.get(cuadra);
-    }
-
-    @EventListener
-    public void detectOutage(LightStatusDTO status) {
-        if ("APAGADA".equals(status.getEstado())) {
-            // Usar el método correcto con Optional
-            Optional<LightStatusDocument> lastStatusOpt = lightStatusRepository.findTop1ByCuadraOrderByTimestampDesc(status.getCuadra());
-
-            if (lastStatusOpt.isPresent() && "ENCENDIDA".equals(lastStatusOpt.get().getEstado())) {
-                // ¡Apagón detectado!
-                sendOutageAlert(status.getCuadra());
-            }
-        }
-    }
-
-    private void sendOutageAlert(String cuadra) {
-        // Envío dual: WebSocket + Email
-        eventPublisher.publishEvent(
-                new LightStatusUpdateEvent(this, "ALARM" + cuadra +  "APAGADA" + LocalDateTime.now())
-        );
-        emailService.sendLightOutageAlert(cuadra, LocalDateTime.now());
     }
 }
