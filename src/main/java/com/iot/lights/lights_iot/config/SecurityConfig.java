@@ -42,14 +42,12 @@ public class SecurityConfig {
                 ).permitAll()
 
                 // --- B. ENDPOINTS DE ADMINISTRADOR (Requieren rol 'ADMIN') ---
-                // CORRECCIÓN: Se protegen todos los endpoints de roles y de admin.
-                .requestMatchers(// Toda la gestión de roles es solo para administradores.
-                        "/admin/**",
-                        "/role/**"
-                ).hasRole("ADMIN") // MEJORA: Usar mayúsculas es la convención.
+                .requestMatchers(
+                        "/role/**",      // CORRECCIÓN: Toda la gestión de roles es solo para administradores.
+                        "/admin/**"
+                ).hasRole("ADMIN")
 
                 // --- C. CUALQUIER OTRA PETICIÓN (Requiere autenticación) ---
-                // Si la petición no coincide con ninguna regla anterior, debe estar autenticada.
                 .anyRequest().authenticated()
         );
 

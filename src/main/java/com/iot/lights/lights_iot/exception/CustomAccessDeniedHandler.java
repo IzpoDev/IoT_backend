@@ -15,7 +15,7 @@ public class CustomAccessDeniedHandler implements AccessDeniedHandler {
         LocalDateTime now = LocalDateTime.now();
         String message = (accessDeniedException != null && accessDeniedException.getMessage() != null) ? accessDeniedException.getMessage() : "Access Denied";
         String path = request.getRequestURI();
-        response.setHeader("StroreAppDeniedReason", "Authorization Failed");
+        response.setHeader("IoTAppDeniedReason", "Authorization Failed");
         response.setStatus(HttpStatus.FORBIDDEN.value());
         response.setContentType("application/json;charset=UTF-8");
         String jsonResponse = String.format("{\"timestamp\": \"%s\", \"status\": %d, \"error\": \"%s\", \"message\": \"%s\", \"path\": \"%s\"}",

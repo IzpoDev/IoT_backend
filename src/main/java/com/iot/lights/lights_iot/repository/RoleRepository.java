@@ -16,4 +16,7 @@ public interface RoleRepository extends JpaRepository<RoleEntity, Long> {
 
     @Query("SELECT r FROM RoleEntity r WHERE r.id =:id")
     Optional<RoleEntity> findById(@Param("id") Long id);
+
+    @Query("SELECT CASE WHEN COUNT(r) > 0 THEN true ELSE false END FROM RoleEntity r WHERE r.name =:name")
+    Boolean existsByName(@Param("name") String name);
 }

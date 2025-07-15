@@ -3,11 +3,10 @@ package com.iot.lights.lights_iot.mapper;
 import com.iot.lights.lights_iot.model.dto.RoleRequestDto;
 import com.iot.lights.lights_iot.model.dto.RoleResponseDto;
 import com.iot.lights.lights_iot.model.entity.RoleEntity;
-import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-@Component
+
 public class RoleMapper {
 
     public static RoleEntity toEntity(RoleRequestDto roleRequestDto) {
